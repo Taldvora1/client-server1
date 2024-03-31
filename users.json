@@ -1,0 +1,27 @@
+[
+    {
+        "username": "tal",
+        "password": "123",
+        "role": "regular_user"
+    },
+    {
+        "username": "sahar",
+        "password": "123",
+        "role": "regular_user"
+    },
+    {
+        "username": "taldvora",
+        "password": "123",
+        "role": "regular_user"
+    },
+    {
+        "username": "taldvora",
+        "password": "111",
+        "role": "regular_user"
+    },
+    {
+        "username": "tald",
+        "password": "123",
+        "role": "regular_user"
+    }
+]
