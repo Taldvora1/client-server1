@@ -70,19 +70,19 @@ def receive_messages():
             break
 
 
-def display_message(message):
-    chat_history.config(state='normal')
-    chat_history.insert(END, message + '\n')
-    chat_history.config(state='disabled')
-    chat_history.yview(END)
+# Function to send an encrypted message
 # Function to send a message
 def send_message():
     while True:
         try:
-            message = entry_field.get()
-            if message:
-                entry_field.delete(0, END)
-                client_socket.send(encrypt_message(message))
+            # Get user input for sending a message
+            message = input("Enter message: ")
+            if message == 'send_file':
+                send_file()
+            # Encrypt the message using server's public key
+            encrypted_message = encrypt_message(message)
+            # Send the encrypted message to the server
+            client_socket.send(encrypted_message)
 
 
         except Exception as e:
@@ -187,35 +187,3 @@ send_thread.join()
 receive_thread.join()
 
 print('You are now disconnected from the server')
-
-def create_gui():
-    root = Tk()
-    root.title("Chat Client")
-
-    frame = Frame(root)
-    scrollbar = Scrollbar(frame)
-    global chat_history
-    chat_history = Text(frame, height=20, width=50, state='disabled', yscrollcommand=scrollbar.set)
-    global entry_field
-    entry_field = Entry(frame, width=50)
-    send_button = Button(frame, text="Send", command=send_message)
-
-    frame.pack(pady=10)
-    scrollbar.pack(side='right', fill='y')
-    chat_history.pack(side='left', fill='both', padx=5, pady=5)
-    entry_field.pack(side='left', fill='x', padx=5, pady=5)
-    send_button.pack(side='right', padx=5, pady=5)
-
-    receive_thread = threading.Thread(target=receive_messages)
-    receive_thread.start()
-
-    root.mainloop()
-
-if authenticate_user():
-    print('You are now connected to the server!')
-else:
-    print('Failed to connect to the server')
-    client_socket.close()
-    exit()
-
-create_gui()
