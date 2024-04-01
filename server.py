@@ -58,6 +58,7 @@ def handle_client(client_socket):
         return
 
     print(f'User {username} authenticated successfully')
+
  # Main loop to handle client messages
     while True:
         try:
@@ -75,8 +76,8 @@ def handle_client(client_socket):
                 send_server_message(client_socket, f"{username} is offline")
                 print(online_users)
                 del online_users[username]
-                client_sockets.remove(client_socket)
                 client_socket.close()
+                client_sockets.remove(client_socket)
             elif message == 'change password':
                 change_password(client_socket, username)
             elif message == 'create chat room':
@@ -98,11 +99,11 @@ def handle_client(client_socket):
                 else:
                     send_server_message(client_socket, f"{username} is not in any chat room")
 
-
-
-
         except Exception as e:
-            print(f"Error in authentication: {e}")
+            print(f"Error : {e}")
+            leave_chat(client_socket, username)
+            client_socket.close()
+            client_sockets.remove(client_socket)
             break # Client closed connection
 
 def send_server_message(client_socket, message, end=True):
@@ -213,6 +214,10 @@ def create_chat_room(client_socket,username):
     if room_name_input in chat_rooms:
         send_server_message(client_socket, f'The chat room "{room_name_input}" already exist, try again')
         create_chat_room(client_socket, username)
+    for user in users:
+        if user["username"] == username:
+            user["role"] = 'admin'
+    Users_Data.save_users_to_json(users, 'users.json')
     chat_rooms[room_name_input] = [username]
 
 def leave_chat(client_socket, username):
@@ -228,6 +233,27 @@ def leave_chat(client_socket, username):
                 if user_socket:
                     send_server_message(user_socket, f'{username} has left the chat room "{room_name}"')
 
+            # Check if there are still users in the room
+            if len(users_in_room) > 0:
+                # Assign admin role to the first user in the list
+                new_admin = users_in_room[0]
+                for user in users:
+                    if user["username"] == new_admin:
+                        user["role"] = 'admin'
+                        # Inform the new admin about their role
+                        new_admin_socket = online_users.get(new_admin)
+                        if new_admin_socket:
+                            send_server_message(new_admin_socket, 'You are now the admin of this chat room')
+                        break
+
+            # Update the leaving user's role to 'regular_user'
+            for user in users:
+                if user["username"] == username:
+                    user["role"] = 'regular_user'
+                    break
+
+            Users_Data.save_users_to_json(users, 'users.json')
+
             send_server_message(client_socket, f'You have left the chat room "{room_name}"')
             return
 
@@ -242,22 +268,19 @@ def join_chat(client_socket, username):
     # Check if the chat room exists
     if room_name_input in chat_rooms:
         # Disconnect the user from their current chat room, if any
-        # Find the chat room where the user is present
-        for existing_room_name, users_in_room in chat_rooms.items():
-            if username in users_in_room:
-                # Remove the user from the chat room
-                users_in_room.remove(username)
-
-                # Inform other users in the chat room that someone has left
-                for user in users_in_room:
-                    user_socket = online_users.get(user)
-                    if user_socket:
-                        send_server_message(user_socket, f'{username} has left the chat room "{existing_room_name}"')
-
-                send_server_message(client_socket, f'You have left the chat room "{existing_room_name}"')
+        leave_chat(client_socket, username)
 
         # Add the user to the new chat room
         chat_rooms[room_name_input].append(username)
+
+        # Check if the user is the only one in the chat room
+        if len(chat_rooms[room_name_input]) == 1:
+            # If the user is the only one, assign them the admin role
+            for user in users:
+                if user["username"] == username:
+                    user["role"] = 'admin'
+                    break
+            Users_Data.save_users_to_json(users, 'users.json')
         send_server_message(client_socket, f'You have joined the chat room "{room_name_input}"')
 
         # Inform other users in the new chat room that someone has joined
@@ -268,7 +291,6 @@ def join_chat(client_socket, username):
                     send_server_message(user_socket, f'{username} has joined the chat room')
     else:
         send_server_message(client_socket, f'The chat room "{room_name_input}" does not exist')
-
 
 def receive_and_send_file(client_socket, username, message):
     # Get the file name from message
