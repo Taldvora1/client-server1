@@ -4,11 +4,33 @@ import Users_Data
 import time
 import messages
 import rsa
+from rsa import pkcs1
+import os
+import hashlib
+import win32api
 
 # Define rate-limiting parameters
 MESSAGE_LIMIT = 5  # Maximum messages allowed per user
 TIME_PERIOD = 1  # Time period in seconds
 MAX_FILE_SIZE = 20000000
+
+
+def on_exit(signal_type):
+    print('caught signal:', str(signal_type))
+    # on exit save the db sig
+    if not (os.path.isfile("DB_integrity_private_key.pem")):
+        return
+    with open('DB_integrity_private_key.pem', "rb") as f:
+        message = open('users.json', 'rb').read() + open('messages.json', 'rb').read()
+        priv = rsa.PrivateKey.load_pkcs1(f.read())
+        db_hash = rsa.sign(message, priv, "SHA-256")
+        assert "SHA-256" == rsa.verify(message, db_hash, si_public_key)
+        with open('db_sig.bin', "wb") as f_sig:
+            f_sig.write(db_hash)
+        print(db_hash.hex())
+
+
+win32api.SetConsoleCtrlHandler(on_exit, True)
 
 # Define the server address and port
 server_address = ('127.0.0.1', 1234)
@@ -32,22 +54,42 @@ with open("public_server.pem", "wb") as f:
 with open("private_server.pem", "wb") as f:
     f.write(private_key.save_pkcs1("PEM"))
 
-def decrypt_message(data):
-    clear_data = rsa.decrypt(data, private_key)
-    return clear_data.decode()
+# Check for DB integrity
+# Load integrity key
+if not (os.path.isfile("DB_integrity_public_key.pem") and
+        os.path.isfile("DB_integrity_private_key.pem")):
+    si_public_key, si_private_key = rsa.newkeys(1024)
+    with open("DB_integrity_public_key.pem", "wb") as f:
+        f.write(si_public_key.save_pkcs1("PEM"))
+    with open("DB_integrity_private_key.pem", "wb") as f:
+        f.write(si_private_key.save_pkcs1("PEM"))
+else:
+    with open("DB_integrity_public_key.pem", "rb") as f:
+        si_public_key = rsa.PublicKey.load_pkcs1(f.read())
 
-client_sockets = [] #the connection client sockets
+if os.path.isfile('db_sig.bin'):
+    # validate signature
+    m = open('users.json', 'rb').read() + open('messages.json', 'rb').read()
+    with open('db_sig.bin', "rb") as f:
+        signature = f.read()
+    print(signature.hex())
+    if rsa.verify(m, signature, si_public_key) == 'SHA-256':
+        print('Verefication pass')
 
-online_users={} #online users at the server
 
-users = [] #users information
+client_sockets = []  # the connection client sockets
 
-chat_rooms = {} #chat room name and the users that connected
+online_users = {}  # online users at the server
 
-messages_data = {} #dictionary with every group messages history
+users = []  # users information
+
+chat_rooms = {}  # chat room name and the users that connected
+
+messages_data = {}  # dictionary with every group messages history
 
 # Dictionary to track message counts and timestamps for each user
 message_counts = {}  # {username: [message_count, last_message_time]}
+
 
 def handle_client(client_socket):
     username = authenticate_user(client_socket)
@@ -58,26 +100,24 @@ def handle_client(client_socket):
         return
 
     print(f'User {username} authenticated successfully')
-
- # Main loop to handle client messages
+    # Main loop to handle client messages
     while True:
         try:
             # Receive message from client
-            data = client_socket.recv(2048)
+            message = client_socket.recv(1024).decode()
 
             if not check_rate_limit(username):
                 send_server_message(client_socket, 'Rate limit exceeded. Please wait before sending more messages.')
                 continue
 
-            message = decrypt_message(data)
 
             if message == 'exit':
                 leave_chat(client_socket, username)
                 send_server_message(client_socket, f"{username} is offline")
                 print(online_users)
                 del online_users[username]
-                client_socket.close()
                 client_sockets.remove(client_socket)
+                client_socket.close()
             elif message == 'change password':
                 change_password(client_socket, username)
             elif message == 'create chat room':
@@ -86,25 +126,24 @@ def handle_client(client_socket):
                 join_chat(client_socket, username)
             elif message == 'leave chat':
                 leave_chat(client_socket, username)
-            elif message.startswith('/send_file'):
+            elif message == 'send_file':
                 receive_and_send_file(client_socket, username, message)
 
             else:
-
+                #check if the user is part of chat room
                 room_name = get_user_room(username)
-
                 if room_name:
-                    # Forward the encrypted message directly to the recipient
+                    # Forward the encrypted message to users in the group
                     broadcast_message(username, message, room_name)
                 else:
                     send_server_message(client_socket, f"{username} is not in any chat room")
 
+
+
         except Exception as e:
-            print(f"Error : {e}")
-            leave_chat(client_socket, username)
-            client_socket.close()
-            client_sockets.remove(client_socket)
-            break # Client closed connection
+            print(f"Error in authentication: {e}")
+            break  # Client closed connection
+
 
 def send_server_message(client_socket, message, end=True):
     time.sleep(0.1)
@@ -114,6 +153,7 @@ def send_server_message(client_socket, message, end=True):
         server_message = f'[server] {message}'
     client_socket.sendall(server_message.encode())
     print(f'Server message sent: {server_message[:-1]}')
+
 
 def authenticate_user(client_socket):
     send_server_message(client_socket, 'Hello, to register choose 1, to log in choose 2 ')
@@ -138,6 +178,7 @@ def authenticate_user(client_socket):
         send_server_message(client_socket, 'invalid character ')
         return False
 
+
 def check_rate_limit(username):
     """
     Check if the user has exceeded the message limit within the time period.
@@ -161,6 +202,7 @@ def check_rate_limit(username):
 
     return True
 
+
 def create_user(client_socket):
     send_server_message(client_socket, 'Please choose a username: ')
     username = client_socket.recv(2048).decode().strip()
@@ -180,37 +222,26 @@ def create_user(client_socket):
         send_server_message(client_socket, f'Error creating user: {str(e)}')
         return False
 
+
 def change_password(client_socket, username):
     send_server_message(client_socket, 'please enter your old password')
-    old_password = client_socket.recv(2048)
-    old_password = decrypt_message(old_password)
+    old_password = client_socket.recv(2048).decode()
+
     for user in users:
-        if user['username'] == username:
-            if user['password'] == old_password:
+        if user["username"] == username:
+            if user["password"] == old_password:
                 send_server_message(client_socket, 'please enter new password')
-                new_password = client_socket.recv(2048)
-                new_password = decrypt_message(new_password)
-                user['password'] = new_password
-                Users_Data.save_user_to_json(users,'users.json')
+                new_password = client_socket.recv(2048).decode()
+                user["password"] = new_password
+                Users_Data.save_users_to_json(users, 'users.json')
                 send_server_message(client_socket, 'Your password has been changed')
                 return
             send_server_message(client_socket, 'The password is incorrect')
 
-def send_message(sender, recipient, message):
-    """
-    Send a message from one user to another.
-
-    Args:
-        sender (str): The username of the sender.
-        recipient (str): The username of the recipient.
-        message (str): The message to send.
-    """
-    # Code for sending messages between users\
 
 def create_chat_room(client_socket,username):
     send_server_message(client_socket, 'please chose a room name')
-    room_name_input = client_socket.recv(2048)
-    room_name_input = decrypt_message(room_name_input)
+    room_name_input = client_socket.recv(2048).decode()
     if room_name_input in chat_rooms:
         send_server_message(client_socket, f'The chat room "{room_name_input}" already exist, try again')
         create_chat_room(client_socket, username)
@@ -219,6 +250,7 @@ def create_chat_room(client_socket,username):
             user["role"] = 'admin'
     Users_Data.save_users_to_json(users, 'users.json')
     chat_rooms[room_name_input] = [username]
+    send_server_message(client_socket, f'The chat room created successfully')
 
 def leave_chat(client_socket, username):
     # Find the chat room where the user is present
@@ -233,24 +265,23 @@ def leave_chat(client_socket, username):
                 if user_socket:
                     send_server_message(user_socket, f'{username} has left the chat room "{room_name}"')
 
-            # Check if there are still users in the room
-            if len(users_in_room) > 0:
-                # Assign admin role to the first user in the list
-                new_admin = users_in_room[0]
-                for user in users:
-                    if user["username"] == new_admin:
-                        user["role"] = 'admin'
-                        # Inform the new admin about their role
-                        new_admin_socket = online_users.get(new_admin)
-                        if new_admin_socket:
-                            send_server_message(new_admin_socket, 'You are now the admin of this chat room')
-                        break
-
             # Update the leaving user's role to 'regular_user'
             for user in users:
                 if user["username"] == username:
-                    user["role"] = 'regular_user'
-                    break
+                    if user["role"] == 'regular_user':
+                        # Check if there are still users in the room
+                        if len(users_in_room) > 0:
+                            # Assign admin role to the first user in the list
+                            new_admin = users_in_room[0]
+                            for user in users:
+                                if user["username"] == new_admin:
+                                    user["role"] = 'admin'
+                                    # Inform the new admin about their role
+                                    new_admin_socket = online_users.get(new_admin)
+                                    if new_admin_socket:
+                                        send_server_message(new_admin_socket, 'You are now the admin of this chat room')
+                                    break
+                break
 
             Users_Data.save_users_to_json(users, 'users.json')
 
@@ -262,13 +293,44 @@ def leave_chat(client_socket, username):
 
 def join_chat(client_socket, username):
     send_server_message(client_socket, 'Please enter the name of the chat room you want to join: ')
-    room_name_input = client_socket.recv(2048)
-    room_name_input = decrypt_message(room_name_input)
+    room_name_input = client_socket.recv(1024).decode()
 
     # Check if the chat room exists
     if room_name_input in chat_rooms:
         # Disconnect the user from their current chat room, if any
-        leave_chat(client_socket, username)
+        for room_name, users_in_room in chat_rooms.items():
+            if username in users_in_room:
+                # Remove the user from the chat room
+                users_in_room.remove(username)
+
+                # Inform other users in the chat room that someone has left
+                for user in users_in_room:
+                    user_socket = online_users.get(user)
+                    if user_socket:
+                        send_server_message(user_socket, f'{username} has left the chat room "{room_name}"')
+
+                # Check if there are still users in the room
+                if len(users_in_room) > 0:
+                    # Assign admin role to the first user in the list
+                    new_admin = users_in_room[0]
+                    for user in users:
+                        if user["username"] == new_admin:
+                            user["role"] = 'admin'
+                            # Inform the new admin about their role
+                            new_admin_socket = online_users.get(new_admin)
+                            if new_admin_socket:
+                                send_server_message(new_admin_socket, 'You are now the admin of this chat room')
+                            break
+
+                # Update the leaving user's role to 'regular_user'
+                for user in users:
+                    if user["username"] == username:
+                        user["role"] = 'regular_user'
+                        break
+
+                Users_Data.save_users_to_json(users, 'users.json')
+
+                return
 
         # Add the user to the new chat room
         chat_rooms[room_name_input].append(username)
@@ -281,7 +343,7 @@ def join_chat(client_socket, username):
                     user["role"] = 'admin'
                     break
             Users_Data.save_users_to_json(users, 'users.json')
-        send_server_message(client_socket, f'You have joined the chat room "{room_name_input}"')
+
 
         # Inform other users in the new chat room that someone has joined
         for user in chat_rooms[room_name_input]:
@@ -289,8 +351,10 @@ def join_chat(client_socket, username):
                 user_socket = online_users.get(user)
                 if user_socket:
                     send_server_message(user_socket, f'{username} has joined the chat room')
+            send_server_message(client_socket, f'You have joined the chat room "{room_name_input}"')
     else:
-        send_server_message(client_socket, f'The chat room "{room_name_input}" does not exist')
+        send_server_message(client_socket, f'The chat room "{room_name_input}" does not exist')
+
 
 def receive_and_send_file(client_socket, username, message):
     # Get the file name from message
@@ -332,14 +396,16 @@ def receive_and_send_file(client_socket, username, message):
         send_server_message(client_socket, 'You are not in a chat room. Please join a chat room to send messages')
         print(f'User {username} tried to send a message without being in a chat room')
 
+
 def get_user_room(username):
     for room_name, users_in_room in chat_rooms.items():
         if username in users_in_room:
             return room_name
     return None  # User not found in any chat room
 
+
 def broadcast_message(sender, encrypted_message, room_name):
-    # Add the message to the chat room's message history
+    # Save the message to the messages dictionary
     if room_name not in messages_data:
         messages_data[room_name] = []
     messages_data[room_name].append({'sender': sender, 'message': encrypted_message})
@@ -347,15 +413,17 @@ def broadcast_message(sender, encrypted_message, room_name):
     # Save messages to the JSON file
     messages.save_messages_to_json(messages_data, 'messages.json')
 
-    # Send encrypted message to all users in the chat room
-    users_in_room = chat_rooms.get(room_name, [])
-    for user in users_in_room:
-        if user != sender:  # Exclude sender
-            user_socket = online_users.get(user)
-            if user_socket:
-                formatted_message = f"[{sender}]: {encrypted_message}"
-                send_server_message(user_socket, formatted_message)
-
+    # Send the message to all users in the chat room
+    if room_name:
+        for user in chat_rooms[room_name]:
+            # Don't send the message to the user who sent it
+            if user == sender:
+                continue
+            connected_user = online_users.get(user)
+            if connected_user:
+                #send_server_message(connected_user, f'{sender} [{room_name}]:', end=False)
+                # Send the message to the user with end to end encryption
+                connected_user.sendall(f'{sender}:{encrypted_message}'.encode())
 
 
 # Load the user data from the JSON file
@@ -369,7 +437,7 @@ for room_name in messages_data.keys():
     chat_rooms[room_name] = []
 
 # Load messages from the JSON file
-#messages_dict = Message.load_dict_from_json('messages.json')
+# messages_dict = Message.load_dict_from_json('messages.json')
 
 # Accept incoming connections and handle clients
 while True:
