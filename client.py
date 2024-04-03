@@ -2,8 +2,8 @@ import socket
 import threading
 from cryptography.fernet import Fernet
 import rsa
-from tkinter import Tk, Frame, Scrollbar, Text, Entry, Button, END
 
+MAX_FILE_SIZE = 20000000
 # Create a TCP/IP socket
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -12,6 +12,9 @@ HOST = '127.0.0.1'
 PORT = 1234
 server_address = (HOST, PORT)
 
+# Global flag to indicate if receiving should be paused
+receiving_paused = False
+
 # Connect to the server
 try:
     client_socket.connect(server_address)
@@ -19,94 +22,159 @@ except Exception as e:
     print(f"Error connecting to the server: {e}")
     exit()
 
-public_key, private_key = rsa.newkeys(1024)
+key = Fernet.generate_key()
+
+# Save the key to a file
+def save_key():
+    with open('key.key','wb') as file:
+        file.write(key)
 
 
-with open("public_client.pem", "wb") as f:
-    f.write(public_key.save_pkcs1("PEM"))
-
-with open("private_client.pem", "wb") as f:
-    f.write(private_key.save_pkcs1("PEM"))
-
-with open("public_server.pem", "rb") as f:
-    public_key_server = rsa.PublicKey.load_pkcs1(f.read())
-
-# Function to encrypt a message
-def encrypt_message(message):
-    # Encrypt message using RSA public key
-    encrypted_message = rsa.encrypt(message.encode('utf-8'), public_key_server)
-    return encrypted_message
-
-# Function to decrypt a message
-def decrypt_message(encrypted_message, fernet_key):
-    fernet = Fernet(fernet_key)
-    decrypted_message = fernet.decrypt(encrypted_message)
-    return decrypted_message.decode()
-
-# Function to receive and decrypt messages
-# Function to receive and decrypt messages
-def receive_messages():
-    while True:
-        try:
-            # Receive message from the server
-            message = client_socket.recv(1024)
-
-            # Check if the message is encrypted
-            if message.startswith(b'[encrypted]'):
-                # Remove the '[encrypted]' prefix
-                message = message[len(b'[encrypted]'):]
-
-                # Decrypt the message using the Fernet key
-                decrypted_message = decrypt_message(message)
-
-                # Print the decrypted message
-                print(decrypted_message)
-            else:
-                # Print the plaintext message
-                print(message.decode())
-
-        except Exception as e:
-            print(f"Error receiving message: {e}")
-            break
+# Load the key from the file
+def load_key():
+    return open('key.key', 'rb').read()
 
 
-# Function to send an encrypted message
-# Function to send a message
+# Try to load key from file if doesn't exist generate a new key and save it to a file
+def load_or_generate_key():
+    try:
+        return load_key()
+    except FileNotFoundError:
+        save_key()
+        return load_key()
+
+
+def encrypt_message(message, key):
+    f = Fernet(key)
+    return f.encrypt(message.encode())
+
+
+def decrypt_message(encrypted_message, key):
+    f = Fernet(key)
+    return f.decrypt(encrypted_message).decode()
+
 def send_message():
+    global receiving_paused
+
     while True:
         try:
             # Get user input for sending a message
             message = input("Enter message: ")
             if message == 'send_file':
                 send_file()
-            # Encrypt the message using server's public key
-            encrypted_message = encrypt_message(message)
-            # Send the encrypted message to the server
-            client_socket.send(encrypted_message)
+            elif message == 'exit':
+                client_socket.send(message.encode())
+            elif message == 'change password':
+                receiving_paused = True  # Pause receiving
+                change_password()
+                receiving_paused = False  # Resume receiving after sending message
+            elif message == 'create chat room':
+                receiving_paused = True  # Pause receiving
+                create_chat_room()
+                receiving_paused = False  # Resume receiving after sending message
+            elif message == 'join chat':
+                receiving_paused = True  # Pause receiving
+                client_socket.settimeout(20)
+                join_chat()
+                receiving_paused = False  # Resume receiving after sending message
+            elif message == 'leave chat':
+                receiving_paused = True  # Pause receiving
+                client_socket.settimeout(20)
+                leave_chat()
+                receiving_paused = False  # Resume receiving after sending message
+            else:
+                # Encrypt the message using server's public key
+                encrypted_message = encrypt_message(message,key)
+                # Send the encrypted message to the server
+                client_socket.send(encrypted_message)
 
 
         except Exception as e:
             print(f"Error sending message: {e}")
             break
 
+# Function to receive and decrypt messages
+def receive_message():
+    global receiving_paused
+    while True:
+                if not receiving_paused:
+                    client_socket.settimeout(0.5)
+                    try:
+                        response = client_socket.recv(1024).decode()
+                        # Check if the response is empty
+                        if response == '':
+                            continue
+                        # Check if its server message or from another user (which is encrypted)
+                        if response.startswith('[server]'):
+                            # Check if the response is a file
+                            if '[Send the file]' in response:
+                                print(response)
+                                # Get the file name
+                                file_name = response.split('[Send the file] ')[1][:-1]
+                                # Get the file data
+                                file_data = client_socket.recv(MAX_FILE_SIZE)
+                                # Write the file data to a file
+                                with open('sent_' + file_name, 'wb') as file:
+                                    file.write(file_data)
+                                print(f'File {file_name} received')
+                            else:
+                                print(response[len('[server] '):])
+                        else:
+                            # Decrypt the message
+                            response = decrypt_message(response, key)
+                            print(response)
+                    except socket.timeout:
+                        continue
+
+def change_password():
+    client_socket.send('change password'.encode())
+    old_password = client_socket.recv(2048).decode()
+    print(old_password)
+    old_password_input = input('old password:')
+    client_socket.send(old_password_input.encode())
+    response = client_socket.recv(2048).decode()
+    print(response)
+    if response == '[server] The password is incorrect':
+        return
+    new_password_input = input('new password:')
+    client_socket.send(new_password_input.encode())
+    response = client_socket.recv(2048).decode()
+    print(response)
 def join_chat():
     try:
+        # Send a request to join a chat room
+        client_socket.send('join chat'.encode())
 
-        # Get user input for the chat room name
-        room_name = input()
+        # Receive instructions from the server
+        response = client_socket.recv(1024).decode()
+        print(response)
 
-        # Send the chat room name to the server
-        client_socket.send(room_name.encode())
+        # Enter the name of the chat room to join
+        room_name_input = input('Room name: ')
+        client_socket.send(room_name_input.encode())
 
-        # Receive response from the server
-        response = client_socket.recv(1024).decode().strip()
-
-        # Print the server's message
+        # Receive a response from the server
+        response = client_socket.recv(1024).decode()
         print(response)
 
     except Exception as e:
         print(f"Error joining chat: {e}")
 
+def leave_chat():
+    client_socket.send('leave chat'.encode())
+    response = client_socket.recv(1024).decode()
+    print(response)
+
+def create_chat_room():
+    client_socket.send('create chat room'.encode())
+    get_name = client_socket.recv(1024).decode()
+    print(get_name)
+    room_name_input = input('Room name:')
+    client_socket.send(room_name_input.encode())
+    response = client_socket.recv(1024).decode()
+    if response == f'[server] The chat room "{room_name_input}" already exist, try again':
+        print(response)
+    print(response)
 
 def authenticate_user():
     try:
@@ -157,7 +225,7 @@ def send_file():
             # Give more timeout for sending files
             client_socket.settimeout(5)
             # Send the file name and data to the server
-            client_socket.send(f'/send_file {file_name}'.encode())
+            client_socket.send(f'send file {file_name}'.encode())
             client_socket.send(file_data)
             # Wait for the server to process the file and send a response
             response = client_socket.recv(1024).decode()
@@ -176,9 +244,11 @@ else:
     client_socket.close()
     exit()
 
+# Load or generate the key
+key = load_or_generate_key()
 # Start the send and receive threads
 send_thread = threading.Thread(target=send_message)
-receive_thread = threading.Thread(target=receive_messages)
+receive_thread = threading.Thread(target=receive_message)
 send_thread.start()
 receive_thread.start()
 
