@@ -1,5 +1,7 @@
 import socket
 import threading
+import time
+
 from cryptography.fernet import Fernet
 import rsa
 
@@ -60,7 +62,7 @@ def send_message():
         try:
             # Get user input for sending a message
             message = input("Enter message: ")
-            if message == 'send_file':
+            if message == 'send file':
                 send_file()
             elif message == 'exit':
                 client_socket.send(message.encode())
@@ -72,12 +74,12 @@ def send_message():
                 receiving_paused = True  # Pause receiving
                 create_chat_room()
                 receiving_paused = False  # Resume receiving after sending message
-            elif message == 'join chat':
+            elif message == 'join':
                 receiving_paused = True  # Pause receiving
                 client_socket.settimeout(20)
                 join_chat()
                 receiving_paused = False  # Resume receiving after sending message
-            elif message == 'leave chat':
+            elif message == 'leave':
                 receiving_paused = True  # Pause receiving
                 client_socket.settimeout(20)
                 leave_chat()
@@ -152,7 +154,7 @@ def join_chat():
         # Enter the name of the chat room to join
         room_name_input = input('Room name: ')
         client_socket.send(room_name_input.encode())
-
+        time.sleep(0.3)
         # Receive a response from the server
         response = client_socket.recv(1024).decode()
         print(response)
